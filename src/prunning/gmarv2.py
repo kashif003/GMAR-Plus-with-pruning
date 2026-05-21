@@ -40,9 +40,9 @@ class GMARv2:
 
     def compute(
         self,
-        logits: torch.Tensor,
-        pred_class: int,
-        attn_weights: List[torch.Tensor],
+        logits: torch.Tensor,              # output logits before sotmax 
+        pred_class: int,                   # prediction class
+        attn_weights: List[torch.Tensor],   # the attention weights of the same model (without MLP)
         model,
     ) -> torch.Tensor:
         """Compute a normalized GMARv2 heatmap with ReLU-clamped gradients.
@@ -68,7 +68,7 @@ class GMARv2:
         if not attn_weights:
             raise ValueError("attn_weights must be a non-empty list")
 
-        model.zero_grad()
+        model.model.zero_grad()
 
         # Backprop on the chosen class to populate gradients on attention
         target_logit = logits[0, pred_class]
@@ -91,39 +91,41 @@ class GMARv2:
             if self.norm_type == "l1":
                 head_importance = pos_grad.abs().sum(dim=(-1, -2))
             else:  # l2
-                head_importance = (pos_grad ** 2).sum(dim=(-1, -2)).sqrt()
+                head_importance = (pos_grad ** 2).sum(dim=(-1, -2)).sqrt()      # only the gradient of the positive gradient
 
             # Normalize head weights per layer
             head_weights = head_importance / head_importance.sum(dim=-1, keepdim=True)
             head_weights = head_weights.view(1, -1, 1, 1)
 
-            # Collapse head dimension and keep the [1, N, N] attention matrix
-            A_weighted = (weighted_grad * head_weights).sum(dim=1)
+            # Collapse head dimension and keep the [1, N(577), N(577)] attention matrix
+            A_weighted = (weighted_grad * head_weights)
             weighted_attns.append(A_weighted)
+        return weighted_attns
 
+        """        
         # Row-normalized residual rollout
-        device = attn_weights[0].device
-        N = weighted_attns[0].size(-1)
-        rollout = torch.eye(N, device=device)
+                device = attn_weights[0].device
+                N = weighted_attns[0].size(-1)
+                rollout = torch.eye(N, device=device)     # after getting the weighted_attention we apply rollout here.
 
-        for A in weighted_attns:
-            A_residual = A + self.alpha * torch.eye(N, device=device)
-            A_residual = A_residual / A_residual.sum(dim=-1, keepdim=True)
-            rollout = rollout @ A_residual
+                for A in weighted_attns:
+                    A_residual = A + self.alpha * torch.eye(N, device=device)
+                    A_residual = A_residual / A_residual.sum(dim=-1, keepdim=True)
+                    rollout = rollout @ A_residual                # layer wise heat map?
 
-        # Influence of class token on patches (exclude cls token at index 0)
-        cls_influence = rollout[0, 0, 1:]
-        side_len = int(cls_influence.numel() ** 0.5)
-        cls_map = cls_influence.reshape(side_len, side_len).cpu().detach()
+                # Influence of class token on patches (exclude cls token at index 0)
+                cls_influence = rollout[0, 0, 1:]
+                side_len = int(cls_influence.numel() ** 0.5)
+                cls_map = cls_influence.reshape(side_len, side_len).cpu().detach()
 
-        # Safe normalization to [0, 1]
-        mn = cls_map.min()
-        mx = cls_map.max()
-        if (mx - mn) <= 0:
-            return torch.zeros_like(cls_map)
-        cls_map = (cls_map - mn) / (mx - mn + 1e-8)
-        return cls_map
-
+                # Safe normalization to [0, 1]
+                mn = cls_map.min()
+                mx = cls_map.max()
+                if (mx - mn) <= 0:
+                    return torch.zeros_like(cls_map)
+                cls_map = (cls_map - mn) / (mx - mn + 1e-8)
+                return cls_map
+        """
     def plot_on_image(
         self,
         cls_map: torch.Tensor,

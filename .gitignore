@@ -1,0 +1,20 @@
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# Python caching
+__pycache__/
+*.pyc
+*/__pycache__/
+
+# Environments and Virtual Envs
+.env
+src/prunning/venv/
+
+# Local logs and training artifacts
+*.log
+src/prunning/Global_score.png
+src/prunning/*_scores.json
+
+# Local Datasets / Large Downloads
+src/prunning/imagenet_val_1000/
