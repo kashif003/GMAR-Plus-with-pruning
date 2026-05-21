@@ -39,15 +39,14 @@ class CustomViT:
     ensure_size : Tuple[int, int], optional
         Target image size (H, W) for preprocessing (default: (224, 224)).
     """
-
     def __init__(
         self,
-        model_name: str = "checkpoints/vit_large_tinyimagenet/best/",
+        model_name: str = "google/vit-large-patch16-384",
         device: Optional[str] = None,
         ensure_size: Tuple[int, int] = (224, 224),
     ) -> None:
         """Initialize CustomViT with model and processor."""
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or ("cuda:7" if torch.cuda.is_available() else "cpu")
         self.model = ViTForImageClassification.from_pretrained(model_name).to(self.device)
         self.model.eval()
 
