@@ -1,80 +1,55 @@
-from gmarv2 import GMARv2
-from transformers import AutoImageProcessor, AutoModelForImageClassification
-import timm
-from utils import load_model, get_img_tensor, get_jpeg_images
-from vit import CustomViT
 import torch
-import json
+from torch.utils.data import DataLoader
+from vit import CustomViT
+from datasets import load_dataset
+from transformers import AutoImageProcessor
+from tqdm import tqdm
 
-
+device = "cuda:7"  if torch.cuda.is_available() else "cpu"
 model = CustomViT()
+model = model.model.to(device)
 processor = AutoImageProcessor.from_pretrained("google/vit-large-patch16-384")
-gmarpp = GMARv2()
 
-images = get_jpeg_images("imagenet_val_1000")
-final_score = []
+dataset = load_dataset(
+    "ILSVRC/imagenet-1k",
+    split="validation",
+    streaming=True,
+    trust_remote_code=True,
+)
 
+def transform(examples):
+    # Ensure all images are RGB (converts grayscale 1-channel to 3-channel)
+    rgb_images = [img.convert("RGB") for img in examples["image"]]
+    
+    # Now the processor will be happy because everything has 3 channels
+    inputs = processor(rgb_images, return_tensors="pt")
+    
+    inputs["labels"] = torch.tensor(examples["label"])
+    return inputs
 
-for idx, image in enumerate(images):
+processed_dataset = dataset.shuffle(buffer_size=1000).map(
+    transform, 
+    batched=True, 
+    remove_columns=["image", "label"]
+)
 
-    torch.cuda.empty_cache()
+val_loader = DataLoader(processed_dataset, batch_size=32)
 
-    img_tensor = get_img_tensor(processor, image)
+print("Starting data stream...")
 
-    logits, predicted_class, class_name, attn_weights = model.forward_with_custom_attention(
-        img_tensor["pixel_values"].to("cuda:7")
-    )
+for batch in val_loader:
+    images = batch["pixel_values"].to(device)
+    labels = batch["labels"].to(device)
+    preds = model(images).logits.argmax()
+    
+    if images.ndim == 5:
+        images = images.squeeze(1)
 
-    score = gmarpp.compute(
-        logits,
-        predicted_class,
-        attn_weights,
-        model
-    )
+    print(f"Batch processed successfully!")
+    print(f"Images shape: {images.shape}") # Expected: [32, 3, 384, 384]
+    print(f"Labels shape: {labels.shape}") # Expected: [32]
+    print(f"preds shape: {preds.shape}") # Expected: [32]
+    
+    break
 
-    # score is assumed to be a list of length 24, each tensor shaped like [16, ...]
-    # Per-head score for each layer -> one value per head
-    img_score_per_head = [
-        (scr.detach().cpu() ** 2).sum(dim=(-1, -2)).sqrt()
-        for scr in score
-    ]  # list of 24 tensors, each of shape [16]
-
-    # -------- GLOBAL MIN-MAX ACROSS ALL LAYERS AND ALL HEADS FOR THIS IMAGE --------
-    all_heads_tensor = torch.cat([t.reshape(-1) for t in img_score_per_head], dim=0)  # shape [24*16]
-
-    global_min = all_heads_tensor.min()
-    global_max = all_heads_tensor.max()
-
-    normalized_score = [
-        (t - global_min) / (global_max - global_min + 1e-8)
-        for t in img_score_per_head
-    ]
-    # -----------------------------------------------------------------------------
-
-    if len(final_score) == 0:
-        final_score = normalized_score
-    else:
-        final_score = [x + y for x, y in zip(final_score, normalized_score)]
-
-    del logits
-    del predicted_class
-    del class_name
-    del attn_weights
-    del score
-    del img_score_per_head
-    del all_heads_tensor
-    del normalized_score
-    del img_tensor
-
-    torch.cuda.empty_cache()
-
-    print("[INFO] Processed image number:", idx + 1)
-
-
-json_ready = {
-    str(i): t.detach().cpu().tolist()
-    for i, t in enumerate(final_score)
-}
-
-with open("Global_final_scores.json", "w") as f:
-    json.dump(json_ready, f)
+print("Done!")
