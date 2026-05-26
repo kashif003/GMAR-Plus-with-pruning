@@ -23,7 +23,7 @@ from transformers import (
 __all__ = ["CustomViT"]
 
 
-class CustomViT:
+class CustomViT(torch.nn.Module):
     """Wrapper around HuggingFace ViT for attention-based explanations.
 
     Loads a fine-tuned ViT checkpoint, manages preprocessing, and enables
@@ -46,6 +46,7 @@ class CustomViT:
         ensure_size: Tuple[int, int] = (224, 224),
     ) -> None:
         """Initialize CustomViT with model and processor."""
+        super().__init__()
         self.device = device or ("cuda:7" if torch.cuda.is_available() else "cpu")
         self.model = ViTForImageClassification.from_pretrained(model_name).to(self.device)
         self.model.eval()
@@ -79,6 +80,15 @@ class CustomViT:
         except Exception:
             tmp = id2label
         self.imagenet_classes = [tmp[i] for i in range(cfg.num_labels)]
+
+    def forward(self, pixel_values=None, **kwargs):
+        """Standard forward pass required by PyTorch and utility functions."""
+        # This passes the 'pixel_values' (and any other args like 'output_attentions')
+        # directly to the underlying HuggingFace model.
+        return self.model(pixel_values=pixel_values, **kwargs)
+    @property
+    def config(self):
+        return self.model.config
 
     def preprocess(self, img) -> torch.Tensor:
         """Preprocess a PIL image for ViT.

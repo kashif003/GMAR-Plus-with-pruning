@@ -37,13 +37,14 @@ def get_jpeg_images(folder_path):
 
     return jpeg_images
 
-def make_prediction(model, processor, url="https://t3.ftcdn.net/jpg/02/41/29/52/360_F_241295223_bIfEF64ZYw15rETnhigRBNQL0qFYbe92.jpg", return_logits=False):
+def make_prediction(model, processor,device, url="https://t3.ftcdn.net/jpg/02/41/29/52/360_F_241295223_bIfEF64ZYw15rETnhigRBNQL0qFYbe92.jpg", return_logits=False):
     response= requests.get(url, timeout=10)
     response.raise_for_status()
     img = Image.open(BytesIO(response.content)).convert("RGB")
 
 
-    input_tensor=processor(img, return_tensors="pt")
+    input_tensor=processor(img, return_tensors="pt").to(device)
+    model = model.to(device)
     preds=model(**input_tensor, output_attentions = True)
     pred=preds.logits.argmax(-1)
     name= model.config.id2label[pred.item()]
