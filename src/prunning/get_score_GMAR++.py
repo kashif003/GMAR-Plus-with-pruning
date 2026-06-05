@@ -65,5 +65,4 @@ json_ready = {
     for i, t in enumerate(final_score)
 }
 
-with open("Global_final_scores.json", "w") as f:
-    json.dump(json_ready, f)
+c

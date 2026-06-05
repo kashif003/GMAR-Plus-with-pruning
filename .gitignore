@@ -18,3 +18,4 @@ src/prunning/*_scores.json
 
 # Local Datasets / Large Downloads
 src/prunning/imagenet_val_1000/
+src/prunning/wandb

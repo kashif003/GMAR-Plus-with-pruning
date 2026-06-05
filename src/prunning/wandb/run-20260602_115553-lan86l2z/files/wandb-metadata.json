@@ -1,0 +1,93 @@
+{
+  "os": "Linux-6.8.0-90-generic-x86_64-with-glibc2.39",
+  "python": "CPython 3.12.3",
+  "startedAt": "2026-06-02T09:55:53.883381Z",
+  "args": [
+    "--config",
+    "10"
+  ],
+  "program": "/home/jovyan/GMAR-Plus-with-pruning/src/prunning/main.py",
+  "codePath": "src/prunning/main.py",
+  "codePathLocal": "main.py",
+  "git": {
+    "remote": "https://kashif003:@github.com/kashif003/GMAR-Plus-with-pruning.git",
+    "commit": "e39884155624817430d66d58c953385c93d4128e"
+  },
+  "email": "kashifriyaz01@gmail.com",
+  "root": "/home/jovyan/GMAR-Plus-with-pruning/src/prunning",
+  "host": "ki-jnbk-0d6a",
+  "executable": "/home/jovyan/GMAR-Plus-with-pruning/src/prunning/venv/bin/python3",
+  "cpu_count": 64,
+  "cpu_count_logical": 128,
+  "gpu": "NVIDIA A100-PCIE-40GB",
+  "gpu_count": 8,
+  "disk": {
+    "/": {
+      "total": "19123537334272",
+      "used": "18147284500480"
+    }
+  },
+  "memory": {
+    "total": "1082014359552"
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA A100-PCIE-40GB",
+      "memoryTotal": "42949672960",
+      "cudaCores": 6912,
+      "architecture": "Ampere",
+      "uuid": "GPU-58e6b591-fda2-1ecc-f6c6-9a1ac8c4cd33"
+    },
+    {
+      "name": "NVIDIA A100-PCIE-40GB",
+      "memoryTotal": "42949672960",
+      "cudaCores": 6912,
+      "architecture": "Ampere",
+      "uuid": "GPU-6b2e87f8-0094-f585-3b13-7b2817bc52c8"
+    },
+    {
+      "name": "NVIDIA A100-PCIE-40GB",
+      "memoryTotal": "42949672960",
+      "cudaCores": 6912,
+      "architecture": "Ampere",
+      "uuid": "GPU-9db3ff93-0cb9-384c-f1df-dedcd47f66ab"
+    },
+    {
+      "name": "NVIDIA A100-PCIE-40GB",
+      "memoryTotal": "42949672960",
+      "cudaCores": 6912,
+      "architecture": "Ampere",
+      "uuid": "GPU-0e1f80a5-bbe8-f9b9-6ee0-db21a446ddd6"
+    },
+    {
+      "name": "NVIDIA A100-PCIE-40GB",
+      "memoryTotal": "42949672960",
+      "cudaCores": 6912,
+      "architecture": "Ampere",
+      "uuid": "GPU-901d6d14-07e0-5eb5-78ad-15971277152d"
+    },
+    {
+      "name": "NVIDIA A100-PCIE-40GB",
+      "memoryTotal": "42949672960",
+      "cudaCores": 6912,
+      "architecture": "Ampere",
+      "uuid": "GPU-cfc7654f-2288-440e-cbfe-a03fc31ae340"
+    },
+    {
+      "name": "NVIDIA A100-PCIE-40GB",
+      "memoryTotal": "42949672960",
+      "cudaCores": 6912,
+      "architecture": "Ampere",
+      "uuid": "GPU-7daf7646-467b-bb44-e4c0-17e8028f3d93"
+    },
+    {
+      "name": "NVIDIA A100-PCIE-40GB",
+      "memoryTotal": "42949672960",
+      "cudaCores": 6912,
+      "architecture": "Ampere",
+      "uuid": "GPU-6dcb2e78-8034-42d7-258c-6e261dc1fb4f"
+    }
+  ],
+  "cudaVersion": "13.0",
+  "writerId": "6s2ks0c93chiixj8tme8f76tioueg84n"
+}
