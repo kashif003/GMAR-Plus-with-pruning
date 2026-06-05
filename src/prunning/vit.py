@@ -11,7 +11,7 @@ This module provides a wrapper around the HuggingFace ViT model that:
 import json
 from pathlib import Path
 from typing import List, Tuple, Optional
-
+from torch import nn
 import torch
 from transformers import (
     ViTImageProcessor,
@@ -106,68 +106,59 @@ class CustomViT(torch.nn.Module):
         inputs = self.processor(images=img, return_tensors="pt")
         return inputs["pixel_values"].to(self.device)
 
-    def forward_with_custom_attention(
-        self, img_tensor: torch.Tensor
-    ) -> Tuple[torch.Tensor, int, str, List[torch.Tensor]]:
-        """Manual forward pass extracting per-layer attention maps.
-
-        Implements the ViT forward pass with manual attention computation
-        to capture and return attention matrices from each block.
-
-        Parameters
-        ----------
-        img_tensor
-            Preprocessed image tensor of shape [1, 3, H, W].
-
-        Returns
-        -------
-        Tuple[torch.Tensor, int, str, List[torch.Tensor]]
-            (logits, predicted_class_idx, class_name, per_layer_attention_matrices)
-        """
+    def forward_with_custom_attention(self, img_tensor: torch.Tensor):
+        # 1. Start with embeddings
+        hidden_states = self.model.vit.embeddings(img_tensor)
         attn_weights: List[torch.Tensor] = []
-        x = self.model.vit.embeddings.patch_embeddings(img_tensor)
-        cls_token = self.model.vit.embeddings.cls_token.expand(x.shape[0], -1, -1)
-        x = torch.cat((cls_token, x), dim=1)
-        x = x + self.model.vit.embeddings.position_embeddings
-        x = self.model.vit.embeddings.dropout(x)
+        self.model.train() # This ensures all internal parameters are ready to flow gradients
+# OR
+        for param in self.model.parameters():
+            param.requires_grad = True
+        
+        for i, layer in enumerate(self.model.vit.encoder.layer):
+            num_heads = layer.attention.attention.num_attention_heads
+            head_dim = layer.attention.attention.attention_head_size
+            qkv_layer = layer.attention.attention
+            
+            # Project Q, K, V
+            q = qkv_layer.query(hidden_states)
+            k = qkv_layer.key(hidden_states)
+            v = qkv_layer.value(hidden_states)
+            
+            def transpose_for_scores(x):
+                new_x_shape = x.size()[:-1] + (num_heads, head_dim)
+                return x.view(*new_x_shape).permute(0, 2, 1, 3)
 
-        for blk in self.model.vit.encoder.layer:
-            B, N, C = x.shape
-            norm_x = blk.layernorm_before(x)
+            q = transpose_for_scores(q)
+            k = transpose_for_scores(k)
+            v = transpose_for_scores(v)
 
-            q = blk.attention.attention.query(norm_x)
-            k = blk.attention.attention.key(norm_x)
-            v = blk.attention.attention.value(norm_x)
-
-            num_heads = blk.attention.attention.num_attention_heads
-            head_dim = C // num_heads
-
-            q = q.view(B, N, num_heads, head_dim).transpose(1, 2)
-            k = k.view(B, N, num_heads, head_dim).transpose(1, 2)
-            v = v.view(B, N, num_heads, head_dim).transpose(1, 2)
-
-            attn = (q @ k.transpose(-2, -1)) / (head_dim ** 0.5)
-            attn = attn.softmax(dim=-1)
-            attn.retain_grad()
-
-            context = attn @ v
-            context = context.transpose(1, 2).reshape(B, N, C)
-            attn_out = blk.attention.output.dense(context)
-            x = x + attn_out
-
-            mlp_in = blk.layernorm_after(x)
-            mlp_hidden = blk.intermediate.dense(mlp_in)
-            mlp_hidden = torch.nn.functional.gelu(mlp_hidden)
-            mlp_out = blk.output.dense(mlp_hidden)
-            x = x + mlp_out
-
+            # 2. Calculate Attention Map
+            attn_scores = torch.matmul(q, k.transpose(-1, -2)) / (head_dim ** 0.5)
+            attn = torch.nn.functional.softmax(attn_scores, dim=-1)
+            
+            # CRITICAL: Keep this tensor in the graph
+            attn.retain_grad() 
             attn_weights.append(attn)
 
-        x = self.model.vit.layernorm(x)
-        cls_embedding = x[:, 0]
-        logits = self.model.classifier(cls_embedding)
+            # 3. Reconstruct Hidden States
+            context_layer = torch.matmul(attn, v)
+            context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+            new_shape = context_layer.size()[:-2] + (layer.attention.attention.all_head_size,)
+            context_layer = context_layer.view(*new_shape)
+            
+            # 4. Connect the output back to the main 'hidden_states' variable
+            attention_output = layer.attention.output(context_layer, hidden_states)
+            intermediate_output = layer.intermediate(attention_output)
+            
+            # Update the PLURAL variable so the NEXT layer receives this data
+            hidden_states = layer.output(intermediate_output, attention_output)
 
-        predicted_class = logits.argmax(dim=-1).item()
-        class_name = self.imagenet_classes[predicted_class]
+        # 5. Final Output
+        sequence_output = self.model.vit.layernorm(hidden_states)
+        logits = self.model.classifier(sequence_output[:, 0, :])
+        
+        predicted_class = torch.argmax(logits, dim=-1).item()
+        class_name = self.model.config.id2label[predicted_class]
 
         return logits, predicted_class, class_name, attn_weights
