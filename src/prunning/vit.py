@@ -1,17 +1,5 @@
-# ViT.py
-"""CustomViT: ViT Model Wrapper with Custom Attention Extraction
+# this is related to  the model all the fucntionalities with the model will be in this file.
 
-This module provides a wrapper around the HuggingFace ViT model that:
-- Loads fine-tuned checkpoints or hub model IDs
-- Matches the image processor from the checkpoint
-- Returns logits, predictions, class names, and per-layer attention maps
-- Enables custom forward passes for explainability methods
-"""
-
-import json
-from pathlib import Path
-from typing import List, Tuple, Optional
-from torch import nn
 import torch
 from transformers import (
     ViTImageProcessor,
@@ -19,146 +7,151 @@ from transformers import (
     AutoConfig,
 )
 
+import torch
+from transformers import ViTForImageClassification, ViTImageProcessor
 
-__all__ = ["CustomViT"]
+import torch
+from transformers import ViTForImageClassification, ViTImageProcessor
 
-
-class CustomViT(torch.nn.Module):
-    """Wrapper around HuggingFace ViT for attention-based explanations.
-
-    Loads a fine-tuned ViT checkpoint, manages preprocessing, and enables
-    custom forward passes that capture per-layer attention matrices.
-
-    Parameters
-    ----------
-    model_name : str, optional
-        Path to fine-tuned checkpoint directory or HF hub ID
-        (default: "checkpoints/vit_large_tinyimagenet/best/").
-    device : str, optional
-        Compute device ('cuda', 'cpu', etc.); auto-selected if None.
-    ensure_size : Tuple[int, int], optional
-        Target image size (H, W) for preprocessing (default: (224, 224)).
-    """
-    def __init__(
-        self,
-        model_name: str = "google/vit-large-patch16-384",
-        device: Optional[str] = None,
-        ensure_size: Tuple[int, int] = (224, 224),
-    ) -> None:
-        """Initialize CustomViT with model and processor."""
+class Custom_model(torch.nn.Module):
+    def __init__(self, device, name="google/vit-large-patch16-384"):
         super().__init__()
-        self.device = device or ("cuda:7" if torch.cuda.is_available() else "cpu")
-        self.model = ViTForImageClassification.from_pretrained(model_name).to(self.device)
+        self.model_name = name
+        self.device = device
+        
+        # Load model in eager mode to ensure the internal 4D matrix graph is built
+        self.model = ViTForImageClassification.from_pretrained(
+            self.model_name,
+            attn_implementation="eager"
+        ).to(self.device)
+        
+        # Explicitly instruct the model to output the 4D attention weights
+        self.model.config.output_attentions = True
+
+        # Lists to store our clean 4D matrices
+        self.attentions = []
+        self.attention_gradients = []
+
         self.model.eval()
 
         try:
-            self.processor = ViTImageProcessor.from_pretrained(model_name, local_files_only=True)
-        except Exception:
-            self.processor = ViTImageProcessor.from_pretrained("google/vit-large-patch16-224")
-
-        preproc_path = Path(model_name) / "preproc.json"
-        if preproc_path.exists():
-            try:
-                pp = json.loads(preproc_path.read_text())
-                if "image_mean" in pp: self.processor.image_mean = pp["image_mean"]
-                if "image_std"  in pp: self.processor.image_std  = pp["image_std"]
-            except Exception:
-                pass
-
+            self.processor = ViTImageProcessor.from_pretrained(self.model_name, local_files_only=True)
+        except Exception as e:
+            print("[INFO] Failed to load the processor:", e)
+            print("[IMPORTANT] please load the processor separately.")
+            self.processor = None
         
-        if ensure_size is not None:
-            H, W = ensure_size
-            try:
-                self.processor.size = {"height": H, "width": W}
-            except Exception:
-                pass
-
-        cfg = self.model.config
-        id2label = cfg.id2label or {}
-        try:
-            tmp = {int(k): v for k, v in id2label.items()}
-        except Exception:
-            tmp = id2label
-        self.imagenet_classes = [tmp[i] for i in range(cfg.num_labels)]
-
-    def forward(self, pixel_values=None, **kwargs):
-        """Standard forward pass required by PyTorch and utility functions."""
-        # This passes the 'pixel_values' (and any other args like 'output_attentions')
-        # directly to the underlying HuggingFace model.
-        return self.model(pixel_values=pixel_values, **kwargs)
-    @property
+    def get_model(self):
+        return self.model
+    
     def config(self):
         return self.model.config
-
-    def preprocess(self, img) -> torch.Tensor:
-        """Preprocess a PIL image for ViT.
-
-        Parameters
-        ----------
-        img
-            PIL Image to preprocess.
-
-        Returns
-        -------
-        torch.Tensor
-            Normalized image tensor of shape [1, 3, H, W].
+    
+    def _create_tensor_hook(self):
         """
-        inputs = self.processor(images=img, return_tensors="pt")
-        return inputs["pixel_values"].to(self.device)
+        Creates a custom lambda hook function that will save the gradient of the 
+        specific tensor it is attached to.
+        """
+        def hook(grad):
+            # This intercepts the gradient of the raw attention weight matrix
+            # Shape will be exactly (1, 16, 577, 577)
+            self.attention_gradients.append(grad.detach().cpu())
+        return hook
 
-    def forward_with_custom_attention(self, img_tensor: torch.Tensor):
-        # 1. Start with embeddings
-        hidden_states = self.model.vit.embeddings(img_tensor)
-        attn_weights: List[torch.Tensor] = []
-        self.model.train() # This ensures all internal parameters are ready to flow gradients
-# OR
-        for param in self.model.parameters():
-            param.requires_grad = True
+    def clear(self):
+        """Wipes tracking lists to clean memory between runs."""
+        self.attentions = []
+        self.attention_gradients = []
+    
+    def full_forward_pass(self, input_tensor, target_class=None):
+        """
+        Runs a forward pass and a batch-safe backward pass to capture 4D gradients.
+        """
+        self.clear() # Reset tracking arrays
         
-        for i, layer in enumerate(self.model.vit.encoder.layer):
-            num_heads = layer.attention.attention.num_attention_heads
-            head_dim = layer.attention.attention.attention_head_size
-            qkv_layer = layer.attention.attention
-            
-            # Project Q, K, V
-            q = qkv_layer.query(hidden_states)
-            k = qkv_layer.key(hidden_states)
-            v = qkv_layer.value(hidden_states)
-            
-            def transpose_for_scores(x):
-                new_x_shape = x.size()[:-1] + (num_heads, head_dim)
-                return x.view(*new_x_shape).permute(0, 2, 1, 3)
-
-            q = transpose_for_scores(q)
-            k = transpose_for_scores(k)
-            v = transpose_for_scores(v)
-
-            # 2. Calculate Attention Map
-            attn_scores = torch.matmul(q, k.transpose(-1, -2)) / (head_dim ** 0.5)
-            attn = torch.nn.functional.softmax(attn_scores, dim=-1)
-            
-            # CRITICAL: Keep this tensor in the graph
-            attn.retain_grad() 
-            attn_weights.append(attn)
-
-            # 3. Reconstruct Hidden States
-            context_layer = torch.matmul(attn, v)
-            context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
-            new_shape = context_layer.size()[:-2] + (layer.attention.attention.all_head_size,)
-            context_layer = context_layer.view(*new_shape)
-            
-            # 4. Connect the output back to the main 'hidden_states' variable
-            attention_output = layer.attention.output(context_layer, hidden_states)
-            intermediate_output = layer.intermediate(attention_output)
-            
-            # Update the PLURAL variable so the NEXT layer receives this data
-            hidden_states = layer.output(intermediate_output, attention_output)
-
-        # 5. Final Output
-        sequence_output = self.model.vit.layernorm(hidden_states)
-        logits = self.model.classifier(sequence_output[:, 0, :])
+        # 1. Run the forward pass
+        output = self.model(input_tensor, output_attentions=True)
+        logits = output.logits
         
-        predicted_class = torch.argmax(logits, dim=-1).item()
-        class_name = self.model.config.id2label[predicted_class]
+        # 2. Extract the native 4D attention matrices
+        native_attentions = output.attentions
+        
+        # 3. Attach tensor hooks to the live graph
+        for attn_tensor in native_attentions:
+            self.attentions.append(attn_tensor.detach().cpu())
+            attn_tensor.register_hook(self._create_tensor_hook())
+            
+        # 4. Determine the target classes for the entire batch
+        if target_class is None:
+            # Gets the highest scoring class index for EACH image in the batch
+            target_class = logits.argmax(dim=-1) # Shape: (batch_size,)
+            
+        # 🎯 FIX FOR BATCHING: Gather the specific target class logit for each image
+        batch_indices = torch.arange(logits.size(0), device=logits.device)
+        target_scores = logits[batch_indices, target_class] # Shape: (batch_size,)
+        
+        # 🎯 Turn the batch vector into a single scalar by taking the sum
+        loss_scalar = target_scores.sum()
+        
+        # 5. Clear old network gradients and execute backprop on the scalar
+        self.model.zero_grad()
+        loss_scalar.backward()
+        
+        # Reverse the gradient list so it lines up index-for-index with the forward list
+        self.attention_gradients.reverse()
+        
+        return output, self.attentions, self.attention_gradients
 
-        return logits, predicted_class, class_name, attn_weights
+
+custom_model = Custom_model(device="cpu")
+model = custom_model.get_model()
+dummy_input = torch.rand(2,3,384,384)
+
+output, attention, gradient = custom_model.full_forward_pass(dummy_input) # output.logits.shape = (1,1000)
+
+import numpy as np
+import torch
+
+def make_final_score(attention, gradient, final_score_dict):
+    """
+    Computes head relevance scores for a batch and aggregates them 
+    accumulatively into final_score_dict across the entire training/epoch loop.
+    """
+    if final_score_dict is None:
+        final_score_dict = {}
+
+    for layer_idx, (attn, grad) in enumerate(zip(attention, gradient)):
+        key = int(layer_idx)
+        
+        if isinstance(attn, torch.Tensor):
+            att_arry = attn.detach().cpu().numpy()
+        else:
+            att_arry = np.array(attn)
+            
+        if isinstance(grad, torch.Tensor):
+            grad_arry = grad.detach().cpu().numpy()
+        else:
+            grad_arry = np.array(grad)
+        
+        weighted_attention = att_arry * grad_arry
+        
+        positive_relevance = np.maximum(weighted_attention, 0)
+        
+        if positive_relevance.ndim == 4:
+            batch_head_scores = np.sum(positive_relevance, axis=(0, 2, 3))
+        elif positive_relevance.ndim == 3:
+            batch_head_scores = np.sum(positive_relevance, axis=(1, 2))
+        
+        if key in final_score_dict:
+            final_score_dict[key] += batch_head_scores
+        else:
+            final_score_dict[key] = batch_head_scores
+
+    return final_score_dict
+
+"""final_dict = {}
+for i in range(3):
+
+    final = make_final_score(attention, gradient, final_dict)
+
+print("done")"""

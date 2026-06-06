@@ -1,73 +1,69 @@
-from chefar import CheferHeadAttribution  # The class we created earlier
-from transformers import AutoImageProcessor
-from utils import get_img_tensor, get_jpeg_images
-from vit import CustomViT
+# this file will be used to get the attention head score for the chefar cam.
+
+"""
+1) forward pass
+    + get attention matrix and also class prediction
+2) calculate the gradients based on the prediction.
+4) make the score for that layer
+"""
+from vit import Custom_model
+from transformers import AutoImageProcessor, AutoModelForImageClassification    
+from utils import get_jpeg_images,get_img_tensor
 import torch
-import json
+import numpy as np
 
-# 1. Setup Model and Chefer Attribution
-model = CustomViT()
+custom_model = Custom_model(device="cuda:7")
 processor = AutoImageProcessor.from_pretrained("google/vit-large-patch16-384")
-# Note: CheferCAM requires the full model for LRP backward flow
-chefer_attr = CheferHeadAttribution()
-
 images = get_jpeg_images("imagenet_val_1000")
-final_score = []
 
-print(f"[INFO] Starting CheferCAM Head Attribution for {len(images)} images...")
+final_score = {}
+
+def make_final_score(attention, gradient, final_score_dict):
+    """
+    Computes head relevance scores for a batch and aggregates them 
+    accumulatively into final_score_dict across the entire training/epoch loop.
+    """
+    if final_score_dict is None:
+        final_score_dict = {}
+
+    for layer_idx, (attn, grad) in enumerate(zip(attention, gradient)):
+        key = int(layer_idx)
+        
+        if isinstance(attn, torch.Tensor):
+            att_arry = attn.detach().cpu().numpy()
+        else:
+            att_arry = np.array(attn)
+            
+        if isinstance(grad, torch.Tensor):
+            grad_arry = grad.detach().cpu().numpy()
+        else:
+            grad_arry = np.array(grad)
+        
+        weighted_attention = att_arry * grad_arry
+        
+        positive_relevance = np.maximum(weighted_attention, 0)
+        
+        if positive_relevance.ndim == 4:
+            batch_head_scores = np.sum(positive_relevance, axis=(0, 2, 3))
+        elif positive_relevance.ndim == 3:
+            batch_head_scores = np.sum(positive_relevance, axis=(1, 2))
+        
+        if key in final_score_dict:
+            final_score_dict[key] += batch_head_scores
+        else:
+            final_score_dict[key] = batch_head_scores
+
+    return final_score_dict
 
 for idx, image in enumerate(images):
-    torch.cuda.empty_cache()# Clean slate for backward passes
-    
-    # Pre-processing
+    torch.cuda.empty_cache()
     img_tensor = get_img_tensor(processor, image)
-    pixel_values = img_tensor["pixel_values"].to("cuda:6")
 
-    # Forward pass through your custom ViT
-    # CheferCAM logic needs the logits and the predicted class to start the backward flow
-    logits, predicted_class, class_name, attn_weights = model.forward_with_custom_attention(pixel_values)
+    output, attention, gradient = custom_model.full_forward_pass(img_tensor)
 
-    # 2. Compute Head Scores using LRP + Gradients
-    # This returns a list of 24 tensors (one per layer), each [num_heads]
-    # Logic inside: (Grad * Relevance).clamp(min=0).sum()
-    img_head_scores = chefer_attr.compute(
-    logits=logits,
-    pred_class=predicted_class,
-    attn_weights=attn_weights,  # <--- Add this line
-    model=model
-)
+    final_score = make_final_score(attention, gradient, final_score)
 
-    # 3. GLOBAL MIN-MAX NORMALIZATION
-    # This ensures scores are comparable across layers for this specific image
-    all_scores_flat = torch.cat([t.flatten() for t in img_head_scores])
-    global_min = all_scores_flat.min()
-    global_max = all_scores_flat.max()
-    
-    normalized_img_scores = [
-        (t - global_min) / (global_max - global_min + 1e-8)
-        for t in img_head_scores
-    ]
 
-    # 4. AGGREGATION (Running Sum)
-    if len(final_score) == 0:
-        final_score = normalized_img_scores
-    else:
-        final_score = [x + y for x, y in zip(final_score, normalized_img_scores)]
 
-    # Memory Management
-    del logits, predicted_class, img_head_scores, normalized_img_scores
-    if (idx + 1) % 250 == 0:
-        print(f"[INFO] Processed {idx + 1} images...")
-        break
 
-# 5. SAVE TO JSON
-# Convert tensors to list for JSON serialization
-json_ready = {
-    str(layer_idx): layer_tensor.tolist()
-    for layer_idx, layer_tensor in enumerate(final_score)
-}
 
-with open("chefer_head_scores.json", "w") as f:
-    json.dump(json_ready, f, indent=4)
-
-print("[SUCCESS] CheferCAM head scores saved to chefer_head_scores.json")
