@@ -11,6 +11,7 @@ __pycache__/
 .env
 src/prunning/venv/
 venv
+src/prunning/.env
 # Local logs and training artifacts
 *.log
 src/prunning/Global_score.png
