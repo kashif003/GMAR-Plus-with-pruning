@@ -1,5 +1,5 @@
 import subprocess
-configs = [60]
+configs = [50, 60]
 
 for cfg in configs:
 

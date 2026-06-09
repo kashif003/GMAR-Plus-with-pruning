@@ -23,10 +23,11 @@ class Custom_model(torch.nn.Module):
         self.model = ViTForImageClassification.from_pretrained(
             self.model_name,
             attn_implementation="eager"
-        ).to(self.device)
+        )
         
         # Explicitly instruct the model to output the 4D attention weights
-        self.model.config.output_attentions = True
+        # self.model.config.output_attentions = False
+        # self.model.config.return_dict = False
 
         # Lists to store our clean 4D matrices
         self.attentions = []
@@ -70,6 +71,7 @@ class Custom_model(torch.nn.Module):
         self.clear() # Reset tracking arrays
         
         # 1. Run the forward pass
+        input_tensor = input_tensor
         output = self.model(input_tensor, output_attentions=True)
         logits = output.logits
         
@@ -102,13 +104,13 @@ class Custom_model(torch.nn.Module):
         
         return output, self.attentions, self.attention_gradients
 
-
+"""
 custom_model = Custom_model(device="cpu")
 model = custom_model.get_model()
 dummy_input = torch.rand(2,3,384,384)
 
 output, attention, gradient = custom_model.full_forward_pass(dummy_input) # output.logits.shape = (1,1000)
-
+"""
 import numpy as np
 import torch
 

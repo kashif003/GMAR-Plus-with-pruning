@@ -1,3 +1,4 @@
+"""
 from transformers import AutoImageProcessor, AutoModelForImageClassification
 
 # load model from Hugging Face
@@ -245,7 +246,9 @@ def prune_vit_out_channels(
 from torch.utils.data import ConcatDataset
 
 def get_datasets_by_cv(cv_split, index):
-    """return the datasets by doing cv split."""
+
+    #return the datasets by doing cv split.
+
     split_number= f"split_{index+1}"
 
     training_datastes= [Dataset.from_file(path) for path in cv_split[split_number]["training"]]
@@ -391,7 +394,7 @@ def fine_tune(model,cv_names,  params:dict,scheduler,device,  initial_accuracy):
                 break  # stop training
 
     return model
-
+"""
 
 # from TinyViT.models.tiny_vit import tiny_vit_5m_224
 # def load_model(return_params = False):
