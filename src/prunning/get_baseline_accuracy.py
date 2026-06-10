@@ -1,14 +1,14 @@
 import torch
 from torch.utils.data import DataLoader
-from vit import CustomViT
+# from vit import CustomViT
 from datasets import load_dataset
 from transformers import AutoImageProcessor
 from tqdm import tqdm
 import wandb
 
 # 1. Setup Device
-device = "cuda:7" if torch.cuda.is_available() else "cpu"
-print(f"\n[INFO] Device: {device}")
+device = "cuda:6" if torch.cuda.is_available() else "cpu"
+# print(f"\n[INFO] Device: {device}")
 
 # 2. Load Model and Processor
 # model = CustomViT()

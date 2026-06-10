@@ -55,14 +55,29 @@ def make_final_score(attention, gradient, final_score_dict):
 
     return final_score_dict
 
-for idx, image in enumerate(images):
+
+
+from tqdm import tqdm
+for idx, image in tqdm(enumerate(images)):
     torch.cuda.empty_cache()
     img_tensor = get_img_tensor(processor, image)
 
-    output, attention, gradient = custom_model.full_forward_pass(img_tensor)
+    output, attention, gradient = custom_model.full_forward_pass(img_tensor["pixel_values"])
 
     final_score = make_final_score(attention, gradient, final_score)
 
+    if idx % 100== 0:
+        print(final_score)
+
+
+print("[INFO] total imges processed:", idx+1)
+
+print("[INFO] saving file")
+import json
+clean_serializable_score = {key: val.tolist() if hasattr(val, "tolist") else val 
+                            for key, val in final_score.items()}
+with open("chefar_score.json", "w") as f:
+    json.dump(clean_serializable_score, f)
 
 
 

@@ -12,10 +12,11 @@ class Custom_model(torch.nn.Module):
         self.model = ViTForImageClassification.from_pretrained(
             self.model_name,
             attn_implementation="eager"
-        ).to(self.device)
+        )
         
         # Explicitly instruct the model to output the 4D attention weights
-        self.model.config.output_attentions = True
+        # self.model.config.output_attentions = False
+        # self.model.config.return_dict = False
 
         # Lists/Dicts to store our structural data
         self.attentions = []

@@ -2,8 +2,7 @@
 
 from utils import get_layers_and_heads
 from transformers import AutoImageProcessor, AutoModelForImageClassification 
-from vit import CustomViT   
-from utils import make_prediction
+from vit import Custom_model   
 from thop import profile, clever_format
 import torch
 from prune import FLOPS_and_PARAMS, prune_vit_heads
@@ -16,30 +15,33 @@ load_dotenv()
 WANDB_API_KEY = os.getenv("WANDB_KEY")
 wandb.login(key=WANDB_API_KEY)
 
+
 parser = argparse.ArgumentParser()
 
 parser.add_argument("--config", type=int, required=True)
 
 args = parser.parse_args()
-cfg = args.config
+cfg = args.config  #TODO
 wandb.init(
     project="GMAR++ with pruning",
-    name=f"Magnitude_{cfg}",
+    name=f"chefar_cam_{cfg}",
     config={
         "Pruning precentage": cfg
     }
 )
 
-layer_list,head_list = get_layers_and_heads("mag_score.json", percentage = cfg)
+layer_list,head_list = get_layers_and_heads("chefar_score.json", percentage = cfg)
 
-device = torch.device("cuda:7" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:6" if torch.cuda.is_available() else "cpu")
 print("[INFO] Device:", device)
 
 
 # before pruning
 dummy_input = torch.randn(1, 3, 384, 384).to(device)
-model = CustomViT()
+custom_model = Custom_model(device =device)
+model = custom_model.get_model().to(device)
 bflops, bparams = FLOPS_and_PARAMS(model, dummy_input)
+
 
 model_2 = prune_vit_heads(model, layer_indices=layer_list, heads_to_prune_list=head_list, device=device)
 processor = AutoImageProcessor.from_pretrained("google/vit-large-patch16-384")
