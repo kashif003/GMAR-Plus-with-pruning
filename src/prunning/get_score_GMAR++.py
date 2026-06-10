@@ -1,10 +1,4 @@
-from gmarv2 import GMARv2
-from transformers import AutoImageProcessor, AutoModelForImageClassification    
-import timm
-from utils import load_model, get_img_tensor, get_jpeg_images
-from vit import CustomViT
-import torch
-import json
+  
 
 
 model = CustomViT()
