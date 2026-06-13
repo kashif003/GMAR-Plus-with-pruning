@@ -70,14 +70,18 @@ class Custom_model(torch.nn.Module):
     def full_forward_pass(self, input_tensor, target_class=None):
         """Runs a forward pass and a batch-safe backward pass."""
         self.clear() 
+        # Make sure this list is reset every run
         self.attention_gradients_list = []
+        self.attentions = []  # Ensure this is reset too
         
+        # Forward pass - keep output_attentions=True
         output = self.model(input_tensor, output_attentions=True)
         logits = output.logits
         native_attentions = output.attentions
         
+        # Store tensors and register hooks on the active GPU tensors
         for attn_tensor in native_attentions:
-            self.attentions.append(attn_tensor.detach().cpu())
+            self.attentions.append(attn_tensor)  # Keep on GPU for element-wise math later
             attn_tensor.register_hook(self._create_tensor_hook())
             
         if target_class is None:
@@ -87,12 +91,15 @@ class Custom_model(torch.nn.Module):
         target_scores = logits[batch_indices, target_class] 
         loss_scalar = target_scores.sum()
         
+        # Clear old gradients and backpropagate
         self.model.zero_grad()
-        loss_scalar.backward()  # FIX: Added missing .backward()
+        loss_scalar.backward()
         
+        # PyTorch hooks append in forward order, so reversing gives you Layer 1 -> Layer 24
         self.attention_gradients_list.reverse()
+        
         return output, self.attentions, self.attention_gradients_list
-    
+        
     def legrad_forward_pass(self, inputs, target_class=None):
         """Pure LeGrad implementation tracking layer-wise gradients."""
         self.clear() 

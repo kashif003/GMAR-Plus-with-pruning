@@ -58,5 +58,3 @@ json_ready = {
     str(i): t.detach().cpu().tolist()
     for i, t in enumerate(final_score)
 }
-
-c
