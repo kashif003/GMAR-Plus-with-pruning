@@ -40,16 +40,27 @@ images = get_jpeg_images("imagenet_val_1000")
 processor = AutoImageProcessor.from_pretrained("google/vit-large-patch16-384")
 
 
-
+from tqdm import tqdm
+print("[INFO] Making Legrad score.")
 global_pruning_scores = {}
-for idx, image in enumerate(images):
+for idx, image in tqdm(enumerate(images)):
 
 # FIX: Calling the pure legrad pass instead of the incomplete standard pass
     torch.cuda.empty_cache()
     img_tensor = get_img_tensor(processor, image)
-    output, attention, legrad_grads = custom_model.legrad_forward_pass(img_tensor)
+    output, attention, legrad_grads = custom_model.legrad_forward_pass(img_tensor.pixel_values)
 
 
     global_pruning_scores = accumulate_legrad_scores(legrad_grads, global_pruning_scores)
 
-print("done")
+#-- saving a json file
+import json
+final_score = {}
+
+for k, v in global_pruning_scores.items():
+    final_score[k] = [score.item() for score in v ]
+
+with open("legrad_score.json", "w") as file:
+    json.dump(final_score, file)
+
+

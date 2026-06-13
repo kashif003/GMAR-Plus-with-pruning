@@ -1,4 +1,3 @@
-"""
 from transformers import AutoImageProcessor, AutoModelForImageClassification
 
 # load model from Hugging Face
@@ -394,7 +393,6 @@ def fine_tune(model,cv_names,  params:dict,scheduler,device,  initial_accuracy):
                 break  # stop training
 
     return model
-"""
 
 # from TinyViT.models.tiny_vit import tiny_vit_5m_224
 # def load_model(return_params = False):
@@ -439,47 +437,35 @@ def fine_tune(model,cv_names,  params:dict,scheduler,device,  initial_accuracy):
 import json
 from collections import defaultdict
 
-def get_layers_and_heads(path, percentage=10, score_type ="global"):
+def get_layers_and_heads(path, percentage=10, score_type="global"):
     """
     Retrieves and identifies the lowest-scoring heads for model pruning.
-
-    Args:
-        path (str): The file path to the JSON containing global importance scores.
-        percentage (int, optional): The percentage of total heads to be pruned. 
-            Defaults to 10.
-        score_type (str, optional): The scoring methodology to use ("global" or "local"). 
-            Currently, only "global" is supported. Defaults to "global".
-
-    Returns:
-        tuple: A tuple containing two views:
-            - list_keys(): Unique layer indices identified for pruning.
-            - list_values(): Lists of head indices corresponding to each layer.
-            
-    Example:
-        >>> layers, heads = get_layers_and_heads("scores.json", percentage=20)
+    Ties are broken by prioritizing layers closer to the output (higher layer numbers).
     """
     with open(path, "r") as file:
         score_file = json.load(file)
+        
     score_list = []
-    for k, v in score_file.items():
-        score_list.append([(k,round(head_score, 4)) for head_score in v])
-    score = sum(score_list, [])    # gives the single list remove the sublist #TODO
-    #score = score_list    # gives the single list remove the sublist
+    # 1. Keep track of (layer, head_index, score) right from the start
+    for layer, heads in score_file.items():
+        for head_idx, head_score in enumerate(heads):
+            score_list.append((layer, head_idx, round(head_score, 4)))
 
-    sorted_score = sorted(score, key= lambda x:x[1], reverse = False)
-    print("[INFO] Sorted score in reverse:",sorted_score )
-    index = int(len(sorted_score)* (percentage/100))
-    layer_list = []
-    head_list = []
-    if score_type == "global":
-        for layer, score in sorted_score[:index]:
-            layer_list.append(layer)
-            head_index = [i for i in range(len(score_file[layer])) if round(score_file[layer][i],4) == score]
-            head_list.append(head_index)
-    layers = []
-    heads = []
+    # 2. Tie-breaker Sort: 
+    # Primary key: score (ascending -> lowest first)
+    # Secondary key: layer number (descending -> higher layers first, using -int(x[0]))
+    sorted_score = sorted(score_list, key=lambda x: (x[2], -int(x[0])))
+    
+    print("[INFO] Sorted score with tie-breaking:", sorted_score)
+    
+    # Calculate how many total heads to prune
+    cutoff_index = int(len(sorted_score) * (percentage / 100))
+    
     combined = defaultdict(list)
-    for layer, head in zip(layer_list, head_list):
-        combined[int(layer)].extend(head)
+    
+    if score_type == "global":
+        # 3. Because we tracked head_idx, we can directly populate our dictionary safely!
+        for layer, head_idx, score in sorted_score[:cutoff_index]:
+            combined[int(layer)].append(head_idx)
 
     return list(combined.keys()), list(combined.values())
