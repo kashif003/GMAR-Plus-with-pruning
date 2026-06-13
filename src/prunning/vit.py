@@ -13,6 +13,7 @@ class Custom_model(torch.nn.Module):
             self.model_name,
             attn_implementation="eager"
         )
+        self.model = self.model.to(self.device)
         
         # Explicitly instruct the model to output the 4D attention weights
         # self.model.config.output_attentions = False
@@ -61,6 +62,25 @@ class Custom_model(torch.nn.Module):
             return grad
         return hook
 
+    def _create_tensor_hook_GMAR(self, layer_idx):
+        """GMAR hook: Extract head importance scores using L2 norm on raw gradients."""
+        def hook(grad):
+            # grad shape: [Batch, Heads, Tokens, Tokens]
+            
+            # L2 norm across token dimensions -> [Batch, Heads]
+            head_scores = grad.norm(p=2, dim=[-2, -1])
+            
+            # OR L1 norm:
+            # head_scores = grad.abs().sum(dim=[-2, -1])
+            
+            # Average across batch -> [Heads]
+            mean_head_scores = head_scores.mean(dim=0)
+            
+            self.attention_gradients[layer_idx] = mean_head_scores.detach().cpu().numpy()
+            
+            return grad
+        return hook
+
     def clear(self):
         """Wipes tracking lists to clean memory between runs."""
         self.attentions = []
@@ -100,31 +120,30 @@ class Custom_model(torch.nn.Module):
         
         return output, self.attentions, self.attention_gradients_list
         
-    def legrad_forward_pass(self, inputs, target_class=None):
-        """Pure LeGrad implementation tracking layer-wise gradients."""
-        self.clear() 
-    
+    def gmar_forward_pass(self, inputs, target_class=None):
+        """GMAR implementation tracking layer-wise head importance scores."""
+        self.clear()
+
         output = self.model(inputs, output_attentions=True)
         logits = output.logits
         native_attentions = output.attentions
-        
+
         for layer_idx, attn_tensor in enumerate(native_attentions):
             self.attentions.append(attn_tensor.detach().cpu())
-            
-            # Keep intermediate tensor gradient graph alive
+
             attn_tensor.retain_grad()
-            attn_tensor.register_hook(self._create_tensor_hook_legrad(layer_idx))
-            
+            attn_tensor.register_hook(self._create_tensor_hook_GMAR(layer_idx))
+
         if target_class is None:
-            target_class = logits.argmax(dim=-1) 
-            
+            target_class = logits.argmax(dim=-1)
+
         batch_indices = torch.arange(logits.size(0), device=logits.device)
-        target_scores = logits[batch_indices, target_class] 
+        target_scores = logits[batch_indices, target_class]
         loss_scalar = target_scores.sum()
-        
+
         self.model.zero_grad()
-        loss_scalar.backward()  # Triggers the custom hooks automatically
-        
+        loss_scalar.backward()
+
         return output, self.attentions, self.attention_gradients
 
 
