@@ -7,7 +7,7 @@ from tqdm import tqdm
 import wandb
 
 # 1. Setup Device
-device = "cuda:7" if torch.cuda.is_available() else "cpu"
+device = "cuda:1" if torch.cuda.is_available() else "cpu"
 # print(f"\n[INFO] Device: {device}")
 
 # 2. Load Model and Processor

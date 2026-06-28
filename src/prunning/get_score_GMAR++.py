@@ -1,60 +1,62 @@
-  
+# this file will be used to get the score from the GMAR++.
+
+from vit import Custom_model
+from transformers import AutoImageProcessor, AutoModelForImageClassification    
+import torch
+import numpy as np
+
+#-- 
+
+custom_model = Custom_model("cuda:6")
+
+from collections import defaultdict
+import torch
+
+def accumulate_gmarpp_scores(gmarpp_gradients, final_score_dict=None):
+    """
+    Accumulates pre-calculated 1D layer-wise LeGrad head scores 
+    across training iterations or evaluation datasets.
+    """
+    if final_score_dict is None:
+        final_score_dict = {}
+
+    for layer_idx, grad_scores in gmarpp_gradients.items():
+        if layer_idx in final_score_dict:
+            final_score_dict[layer_idx] += grad_scores
+        else:
+            final_score_dict[layer_idx] = np.copy(grad_scores)
+
+    return final_score_dict
 
 
-model = CustomViT()
+from utils import get_jpeg_images,get_img_tensor
+from transformers import AutoImageProcessor, AutoModelForImageClassification    
 processor = AutoImageProcessor.from_pretrained("google/vit-large-patch16-384")
-gmarpp = GMARv2()
-
 images = get_jpeg_images("imagenet_val_1000")
-final_score = []
+from tqdm import tqdm
+global_pruning_scores = {}
+for idx, image in tqdm(enumerate(images)):
 
-for idx, image in enumerate(images):
+# FIX: Calling the pure legrad pass instead of the incomplete standard pass
     torch.cuda.empty_cache()
     img_tensor = get_img_tensor(processor, image)
-    logits, predicted_class, class_name, attn_weights = model.forward_with_custom_attention(
-        img_tensor["pixel_values"].to("cuda:7")
-    )
-    score = gmarpp.compute(
-        logits,
-        predicted_class,
-        attn_weights,
-        model
-    )
-    # score is assumed to be a list of length 24, each tensor shaped like [16, ...]
-    # Per-head score for each layer -> one value per head
-    img_score_per_head = [
-        (scr.detach().cpu() ** 2).sum(dim=(-1, -2)).sqrt()
-        for scr in score
-    ]  # list of 24 tensors, each of shape [16]
-    # -------- GLOBAL MIN-MAX ACROSS ALL LAYERS AND ALL HEADS FOR THIS IMAGE --------
-    all_heads_tensor = torch.cat([t.reshape(-1) for t in img_score_per_head], dim=0)  # shape [24*16]
-    global_min = all_heads_tensor.min()
-    global_max = all_heads_tensor.max()
-    normalized_score = [
-        (t - global_min) / (global_max - global_min + 1e-8)
-        for t in img_score_per_head
-    ]
-    # -----------------------------------------------------------------------------
-    if len(final_score) == 0:
-        final_score = normalized_score
-    else:
-        final_score = [x + y for x, y in zip(final_score, normalized_score)]
-    del logits
-    del predicted_class
-    del class_name
-    del attn_weights
-    del score
-    del img_score_per_head
-    del all_heads_tensor
-    del normalized_score
-    del img_tensor
-
-    torch.cuda.empty_cache()
-
-    print("[INFO] Processed image number:", idx + 1)
+    output, attention, gmarpp_grads = custom_model.gmarpp_forward_pass(img_tensor.pixel_values.to("cuda:6"))
 
 
-json_ready = {
-    str(i): t.detach().cpu().tolist()
-    for i, t in enumerate(final_score)
+    global_pruning_scores = accumulate_gmarpp_scores(gmarpp_grads, global_pruning_scores)
+
+
+import json
+
+print("[INFO] Converting tensors to native Python formats for JSON serialization...")
+
+# Convert integer keys to strings, and PyTorch tensors to standard Python lists
+
+
+# Now json.dump will work flawlessly!
+json_ready_scores = {
+    str(layer_idx): scores.tolist()
+    for layer_idx, scores in global_pruning_scores.items()
 }
+with open("GMARPP_score.json", "w") as file:
+    json.dump(json_ready_scores, file, indent=4)

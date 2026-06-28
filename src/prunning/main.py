@@ -24,15 +24,15 @@ args = parser.parse_args()
 cfg = args.config  #TODO
 wandb.init(
     project="GMAR++ with pruning",
-    name=f"GMAR_score_{cfg}",
+    name=f"legrad_score_{cfg}",
     config={
         "Pruning precentage": cfg
     }
 )
 
-layer_list,head_list = get_layers_and_heads("GMAR_score.json", percentage = cfg)
+layer_list,head_list = get_layers_and_heads("LeGrad_score.json", percentage = cfg)
 
-device = torch.device("cuda:7" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 print("[INFO] Device:", device)
 
 

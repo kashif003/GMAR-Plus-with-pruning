@@ -62,18 +62,40 @@ class Custom_model(torch.nn.Module):
             return grad
         return hook
 
-    def _create_tensor_hook_GMAR(self, layer_idx):
-        """GMAR hook: Extract head importance scores using L2 norm on raw gradients."""
+    def _create_tensor_hook_GMARpp(self, layer_idx):
+        """GMAR++ hook: ReLU filter gradients, then L2 norm for head importance scores."""
         def hook(grad):
             # grad shape: [Batch, Heads, Tokens, Tokens]
             
-            # L2 norm across token dimensions -> [Batch, Heads]
-            head_scores = grad.norm(p=2, dim=[-2, -1])
+            # Step 1 - ReLU filter: keep only positive gradients
+            positive_grad = torch.clamp(grad, min=0)
+            
+            # Step 2 - L2 norm on filtered gradients -> [Batch, Heads]
+            head_scores = positive_grad.norm(p=2, dim=[-2, -1])
             
             # OR L1 norm:
-            # head_scores = grad.abs().sum(dim=[-2, -1])
+            # head_scores = positive_grad.abs().sum(dim=[-2, -1])
             
-            # Average across batch -> [Heads]
+            # Step 3 - Average across batch -> [Heads]
+            mean_head_scores = head_scores.mean(dim=0)
+            
+            self.attention_gradients[layer_idx] = mean_head_scores.detach().cpu().numpy()
+            
+            return grad
+        return hook
+
+    def _create_tensor_hook_legrad(self, layer_idx):
+        """LeGrad hook: ReLU filter gradients, then sum for head importance scores."""
+        def hook(grad):
+            # grad shape: [Batch, Heads, Tokens, Tokens]
+            
+            # Step 1 - ReLU filter: keep only positive gradients
+            positive_grad = torch.clamp(grad, min=0)
+            
+            # Step 2 - Sum on filtered gradients -> [Batch, Heads]
+            head_scores = positive_grad.sum(dim=[-2, -1])
+            
+            # Step 3 - Average across batch -> [Heads]
             mean_head_scores = head_scores.mean(dim=0)
             
             self.attention_gradients[layer_idx] = mean_head_scores.detach().cpu().numpy()
@@ -146,23 +168,91 @@ class Custom_model(torch.nn.Module):
 
         return output, self.attentions, self.attention_gradients
 
+    def gmarpp_forward_pass(self, inputs, target_class=None):
+        """GMAR++ implementation tracking layer-wise head importance scores."""
+        self.clear()
 
-# --- OUTSIDE THE CLASS FUNCTIONALITY ---
+        output = self.model(inputs, output_attentions=True)
+        logits = output.logits
+        native_attentions = output.attentions
 
-def accumulate_legrad_scores(legrad_gradients, final_score_dict=None):
-    """
-    Accumulates pre-calculated 1D layer-wise LeGrad head scores 
-    across training iterations or evaluation datasets.
-    """
-    if final_score_dict is None:
-        final_score_dict = {}
+        for layer_idx, attn_tensor in enumerate(native_attentions):
+            self.attentions.append(attn_tensor.detach().cpu())
 
-    for layer_idx, grad_scores in legrad_gradients.items():
-        if layer_idx in final_score_dict:
-            final_score_dict[layer_idx] += grad_scores
-        else:
-            final_score_dict[layer_idx] = np.copy(grad_scores)
+            attn_tensor.retain_grad()
+            attn_tensor.register_hook(self._create_tensor_hook_GMARpp(layer_idx))
 
-    return final_score_dict
+        if target_class is None:
+            target_class = logits.argmax(dim=-1)
+
+        batch_indices = torch.arange(logits.size(0), device=logits.device)
+        target_scores = logits[batch_indices, target_class]
+        loss_scalar = target_scores.sum()
+
+        self.model.zero_grad()
+        loss_scalar.backward()
+
+        return output, self.attentions, self.attention_gradients
+
+
+    def legrad_forward_pass(self, inputs, target_class=None):
+        """LeGrad implementation tracking layer-wise head importance scores."""
+        self.clear()
+
+        output = self.model(inputs, output_attentions=True)
+        logits = output.logits
+        native_attentions = output.attentions
+
+        for layer_idx, attn_tensor in enumerate(native_attentions):
+            self.attentions.append(attn_tensor.detach().cpu())
+
+            attn_tensor.retain_grad()
+            attn_tensor.register_hook(self._create_tensor_hook_legrad(layer_idx))
+
+        if target_class is None:
+            target_class = logits.argmax(dim=-1)
+
+        batch_indices = torch.arange(logits.size(0), device=logits.device)
+        target_scores = logits[batch_indices, target_class]
+        loss_scalar = target_scores.sum()
+
+        self.model.zero_grad()
+        loss_scalar.backward()
+
+        return output, self.attentions, self.attention_gradients
+
+    def _create_tensor_hook_chefer(self, layer_idx):
+        """Chefer hook: stores raw gradients for later combination with LRP relevance."""
+        def hook(grad):
+            # grad shape: [Batch, Heads, Tokens, Tokens]
+            self.attention_gradients[layer_idx] = grad.detach().cpu()
+            return grad
+        return hook
+
+    def chefer_forward_pass(self, inputs, target_class=None):
+        """Chefer et al. forward pass: stores attention maps and gradients."""
+        self.clear()
+
+        output = self.model(inputs, output_attentions=True)
+        logits = output.logits
+        native_attentions = output.attentions
+
+        for layer_idx, attn_tensor in enumerate(native_attentions):
+            self.attentions.append(attn_tensor)  # keep on GPU, needed for LRP
+
+            attn_tensor.retain_grad()
+            attn_tensor.register_hook(self._create_tensor_hook_chefer(layer_idx))
+
+        if target_class is None:
+            target_class = logits.argmax(dim=-1)
+
+        batch_indices = torch.arange(logits.size(0), device=logits.device)
+        target_scores = logits[batch_indices, target_class]
+        loss_scalar = target_scores.sum()
+
+        self.model.zero_grad()
+        loss_scalar.backward()
+
+        return output, self.attentions, self.attention_gradients
 
 
