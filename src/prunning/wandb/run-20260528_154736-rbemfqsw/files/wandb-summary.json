@@ -1,1 +1,0 @@
-{"FLOPS after Pruning":"169.070G","PARAMS after Pruning":"294.155M","_wandb":{"runtime":3656},"Per batch Accuracy":71.588,"PARAMS before Pruning":"304.124M","_runtime":3656,"FLOPS before Pruning":"174.818G","_timestamp":1.7799797141024706e+09,"_step":1564}
