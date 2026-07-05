@@ -5,7 +5,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--score_path", type=str, required=True)
 args = parser.parse_args()
 
-configs = [10, 20, 30, 40, 50, 60]
+configs = [60]
 
 for cfg in configs:
 
@@ -13,7 +13,7 @@ for cfg in configs:
 
     subprocess.run([
         "python3",
-        "main.py",
+        "src/main.py",
         "--config",
         str(cfg),
         "--score_path",
