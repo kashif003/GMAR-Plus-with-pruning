@@ -1,10 +1,9 @@
 # chefer_score.py
 # Makes head importance scores using Chefer et al. (2021) method.
-# Score = mean_heads( ReLU( gradient x LRP_relevance ) )
 
-from vit import Custom_model
+from ..vit import Custom_model
 from transformers import AutoImageProcessor
-from utils import get_jpeg_images, get_img_tensor
+from ..utils import get_jpeg_images, get_img_tensor
 import torch
 import numpy as np
 import json
@@ -116,7 +115,7 @@ json_ready_scores = {
     for layer_idx, scores in global_pruning_scores.items()
 }
 
-with open("chefer_score.json", "w") as f:
+with open("scores/chefer_score.json", "w") as f:
     json.dump(json_ready_scores, f, indent=4)
 
 print("[INFO] Successfully saved Chefer scores to chefer_score.json!")

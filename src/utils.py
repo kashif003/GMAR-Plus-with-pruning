@@ -1,19 +1,34 @@
-from transformers import AutoImageProcessor, AutoModelForImageClassification
+# utils.py - Contains utility functions for model pruning, dataset preparation, and evaluation.
 
-# load model from Hugging Face
+import copy
+from collections import defaultdict
+from io import BytesIO
+import json
+from pathlib import Path
+
+from datasets import Dataset as HFDataset
+from PIL import Image
+import requests
+import torch
+from torch.utils.data import ConcatDataset, DataLoader, Dataset
+import torch_pruning as tp
+import torchvision.transforms as T
+from thop import clever_format, profile
+from timm.data import create_transform
+from tqdm.auto import tqdm
+from transformers import AutoImageProcessor, AutoModelForImageClassification 
+
+# --- Model & Image Loading Utilities ---
+
 def load_model(name: str):
+    """Loads a model and its corresponding image processor from Hugging Face."""
     processor = AutoImageProcessor.from_pretrained(name) 
     model = AutoModelForImageClassification.from_pretrained(name)
     return processor, model
 
-import requests
-from PIL import Image
-from io import BytesIO
-# this fucntion is used to make a prediction on an image.
 
-from PIL import Image
-from pathlib import Path
 def get_img_tensor(processor, image_path, return_logits=False):
+    """Loads a local image file and converts it into a tensor format suitable for the model."""
     image_path = Path(image_path)
 
     if not image_path.is_file():
@@ -23,7 +38,9 @@ def get_img_tensor(processor, image_path, return_logits=False):
     input_tensor = processor(img, return_tensors="pt")
     return input_tensor
 
+
 def get_jpeg_images(folder_path):
+    """Retrieves all JPEG file paths within a directory."""
     folder = Path(folder_path)
 
     if not folder.is_dir():
@@ -37,37 +54,67 @@ def get_jpeg_images(folder_path):
 
     return jpeg_images
 
-def make_prediction(model, processor,device, url="https://t3.ftcdn.net/jpg/02/41/29/52/360_F_241295223_bIfEF64ZYw15rETnhigRBNQL0qFYbe92.jpg", return_logits=False):
-    response= requests.get(url, timeout=10)
+
+def make_prediction(model, processor, device, url="https://t3.ftcdn.net/jpg/02/41/29/52/360_F_241295223_bIfEF64ZYw15rETnhigRBNQL0qFYbe92.jpg", return_logits=False):
+    """Fetches an image from a URL and makes an evaluation prediction using the model."""
+    response = requests.get(url, timeout=10)
     response.raise_for_status()
     img = Image.open(BytesIO(response.content)).convert("RGB")
 
-
-    input_tensor=processor(img, return_tensors="pt").to(device)
+    input_tensor = processor(img, return_tensors="pt").to(device)
     model = model.to(device)
-    preds=model(**input_tensor, output_attentions = True)
-    pred=preds.logits.argmax(-1)
-    name= model.config.id2label[pred.item()]
+    preds = model(**input_tensor, output_attentions=True)
+    pred = preds.logits.argmax(-1)
+    name = model.config.id2label[pred.item()]
     print(f'Model prediction: {name}')
     if return_logits:
         return preds.logits, pred.item(), preds.attentions
 
 
-# count the params and flops
-from thop import profile, clever_format
+# --- Profiling & Evaluation Utilities ---
+
 def FLOPS_and_PARAMS(model, input):
+    """Counts and formats the model's parameters and FLOPs using thop."""
     flops, params = profile(model, inputs=(input,))
     flops, params = clever_format([flops, params], "%.3f")
     return flops, params
 
 
-from torch.utils.data import Dataset, DataLoader
-import torchvision.transforms as T
-from timm.data import create_transform
-from PIL import Image
-import io
-# prepare the dataset from ImageNet
+def get_val_topk(model, dataloader, device="cpu"):
+    """Evaluates the model on a validation dataset and computes Top-1 and Top-5 accuracy."""
+    model.to(device)
+    model.eval()
+    top1_correct = 0
+    top5_correct = 0
+    total = 0
+
+    for batch in tqdm(dataloader):
+        input_tensor, label = batch
+        input_tensor = input_tensor.to(device)
+        label = label.to(device)
+    
+        outputs = model(input_tensor).logits
+    
+        # Top-1 and Top-5 predictions
+        _, pred_top5 = outputs.topk(5, dim=1, largest=True, sorted=True)  # (batch_size, 5)
+        top1_correct += (pred_top5[:, 0] == label).sum().item()
+        top5_correct += sum([label[i] in pred_top5[i] for i in range(label.size(0))])
+    
+        total += label.size(0)
+
+    top1_acc = top1_correct / total * 100
+    top5_acc = top5_correct / total * 100
+
+    print(f"Top-1 Accuracy: {top1_acc:.2f}%")
+    print(f"Top-5 Accuracy: {top5_acc:.2f}%")
+
+    return top1_acc, top5_acc
+
+
+# --- Dataset & Transformation Pipeline ---
+
 class Mydataset(Dataset):
+    """Custom wrapper for processing ImageNet splits with model-specific transformations."""
     def __init__(self, dataset=None, transforms=None, batch_size=32, shuffle=False, num_workers=8, drop_last=True):
         self.dataset = dataset
         self.batch_size = batch_size
@@ -120,7 +167,7 @@ class Mydataset(Dataset):
                     is_training=True,
                     auto_augment='rand-m9-mstd0.5-inc1',   
                     interpolation='bicubic',
-                    re_prob=0.25,                         
+                    re_prob=0.25,                                         
                     re_mode='pixel',
                     re_count=1,
                     mean=(0.485, 0.456, 0.406),
@@ -142,59 +189,35 @@ class Mydataset(Dataset):
         return dataloader
 
 
-# getting the metric for the validation loop
-import torch
-from tqdm import tqdm
-def get_val_topk(model, dataloader, device="cpu"):
-    model.to(device)
-    model.eval()
-    top1_correct = 0
-    top5_correct = 0
-    total = 0
-    flops = []
-    params = []
+def get_datasets_by_cv(cv_split, index):
+    """Loads and merges specific train and validation subsets dictated by cross-validation splits."""
+    split_number = f"split_{index+1}"
 
-    for batch in tqdm(dataloader):
-        input_tensor, label = batch
-        input_tensor = input_tensor.to(device)
-        label = label.to(device)
-    
-        outputs = model(input_tensor).logits
-    
-        # Top-1 and Top-5 predictions
-        _, pred_top5 = outputs.topk(5, dim=1, largest=True, sorted=True)  # (batch_size, 5)
-        top1_correct += (pred_top5[:, 0] == label).sum().item()
-        top5_correct += sum([label[i] in pred_top5[i] for i in range(label.size(0))])
-    
-        total += label.size(0)
+    training_datasets = [Dataset.from_file(path) for path in cv_split[split_number]["training"]]
+    validation_datasets = [Dataset.from_file(path) for path in cv_split[split_number]["validation"]]
 
-    top1_acc = top1_correct / total * 100
-    top5_acc = top5_correct / total * 100
-
-    print(f"Top-1 Accuracy: {top1_acc:.2f}%")
-    print(f"Top-5 Accuracy: {top5_acc:.2f}%")
-
-    return top1_acc, top5_acc
+    training_dataset = ConcatDataset(training_datasets)
+    valid_dataset = ConcatDataset(validation_datasets)
+    return training_dataset, valid_dataset
 
 
+# --- Pruning & XAI Mechanics ---
 
-import torch
-import torch_pruning as tp
-# this fucntion implements torch puning for VIT
 def prune_vit_out_channels(
-        model,device,
+        model, device,
         input_tensor=torch.randn(1, 3, 224, 224),
         prune_layer_idx=10,
         pruned_heads=[1],   # list of head indices to prune
     ):
-    input_tensor= input_tensor.to(device)
+    """Uses torch_pruning to structurally remove specific attention heads from a ViT Layer."""
+    input_tensor = input_tensor.to(device)
     model.to(device)
     # Params before pruning
     _, b_params = FLOPS_and_PARAMS(model, input_tensor)
     print()
     print(f"params before pruning: {b_params}")
     # Prune specified layer head
-    model= model.to("cpu")
+    model = model.to("cpu")
     block = model.vit.layers[prune_layer_idx]
     # num of heads
     num_heads_before = block.attention.num_attention_heads
@@ -203,7 +226,6 @@ def prune_vit_out_channels(
     print(f'Shape of input: {dummy_input.shape}')
     print(f'Building dependency graph________________________________')
     DG = tp.DependencyGraph().build_dependency(block, example_inputs=dummy_input)
-
 
     # Build index list for selected heads
     idxs = []
@@ -240,33 +262,17 @@ def prune_vit_out_channels(
     for handle in hook_handles:
         handle.remove()
 
-from torch.utils.data import ConcatDataset
 
-def get_datasets_by_cv(cv_split, index):
-
-    #return the datasets by doing cv split.
-
-    split_number= f"split_{index+1}"
-
-    training_datastes= [Dataset.from_file(path) for path in cv_split[split_number]["training"]]
-    validation_datastes= [Dataset.from_file(path) for path in cv_split[split_number]["validation"]]
-
-    trainng_dataset= ConcatDataset(training_datastes)
-    valid_dataset= ConcatDataset(validation_datastes)
-    return trainng_dataset, valid_dataset
-
-
-import copy
-def prune_with_XAI(original_model,score,
-                   cv_names,  hyperparams,scheduler,device,dataloader,
-                   input_tensor=torch.randn(1, 3, 224, 224),
-                   prune_layer_idx=10,
-                   pruned_heads=[1],  index_value=0):
-    
+def prune_with_XAI(original_model, score,
+                    cv_names, hyperparams, scheduler, device, dataloader,
+                    input_tensor=torch.randn(1, 3, 224, 224),
+                    prune_layer_idx=10,
+                    pruned_heads=[1], index_value=0):
+    """Performs continuous targeted pruning using importance scores, falling back to finetuning upon severe accuracy drops."""
     # Deep copy the model
     model = copy.deepcopy(original_model)
     
-    # Measure initial accuracy (uncommented and fixed)
+    # Measure initial accuracy
     print(" calculating initial accuracy of the model.....................................")
     top1_acc_initial, top5_acc = get_val_topk(model, dataloader, device="cpu")
     print("accuracy before pruning:", top1_acc_initial)
@@ -276,7 +282,7 @@ def prune_with_XAI(original_model,score,
     all_values = [item for sublist in score for item in sublist]
     srtd_values = sorted(all_values.copy())  # Sorted ascending (lowest first)
     
-    # 🔹 NEW: keep track of layers that have already been pruned
+    # Track layers that have already been pruned
     pruned_layers = set()
     
     while index_value < len(srtd_values):  # Add bounds to prevent IndexError
@@ -298,13 +304,13 @@ def prune_with_XAI(original_model,score,
             index_value += 1
             continue
 
-        # 🔹 NEW: avoid pruning the same layer multiple times
+        # Avoid pruning the same layer multiple times
         if prune_layer_idx in pruned_layers:
             print(f"Layer {prune_layer_idx} already pruned once; skipping to avoid shape mismatch.")
             index_value += 1
             continue
         
-        # Prune the model (assuming prune_vit_out_channels is defined)
+        # Prune the model
         print(f'Pruning the head......................................')
         print(f'Pruning layer= {prune_layer_idx}')
         print(f'Pruning head index= {pruned_heads}')
@@ -313,11 +319,10 @@ def prune_with_XAI(original_model,score,
             model,
             input_tensor=input_tensor,
             prune_layer_idx=prune_layer_idx,
-            pruned_heads=pruned_heads,device=device
-            
+            pruned_heads=pruned_heads, device=device
         )
 
-        # 🔹 NEW: mark this layer as pruned
+        # Mark this layer as pruned
         pruned_layers.add(prune_layer_idx)
         
         # Measure accuracy after pruning
@@ -329,38 +334,34 @@ def prune_with_XAI(original_model,score,
         if top1_acc_initial - top1_acc_current >= 5:
             print("Accuracy drop too large; stopping pruning.")
             print(f'Fine tuning the model.')
-            model= fine_tune(model,cv_names,  hyperparams,scheduler,device,  top1_acc_initial)
+            model = fine_tune(model, cv_names, hyperparams, scheduler, device, top1_acc_initial)
             break
         index_value += 1  # Move to the next lowest score
     return model
 
 
-    
-from datasets import Dataset
-from tqdm.auto import tqdm
-
-def fine_tune(model,cv_names,  params:dict,scheduler,device,  initial_accuracy):
-    num_epochs= params["epochs"]
-    optimizer= params["optimizer"]
-    criterion= params["loss_fn"]
-
-
+def fine_tune(model, cv_names, params: dict, scheduler, device, initial_accuracy):
+    """Finetunes a pruned model using cyclical data loops until baseline performance recovery or early stopping hits."""
+    num_epochs = params["epochs"]
+    optimizer = params["optimizer"]
+    criterion = params["loss_fn"]
 
     patience = 10  # Number of epochs to wait for improvement
     best_acc = 0.0
     counter = 0
     model.to(device)
+
     # loading the datasets
     for epoch in tqdm(range(num_epochs)):
         model.train()
-        index= epoch%7
+        index = epoch % 7
 
-        trainng_dataset, valid_dataset=get_datasets_by_cv(cv_names, index)
-        dataset_train= Mydataset(trainng_dataset, batch_size=128, shuffle=True, transforms="vit")
-        dataset_valid= Mydataset(valid_dataset, batch_size=128, shuffle=True, transforms="vit")
-        train_loader= dataset_train.dataloader()
+        training_dataset, valid_dataset = get_datasets_by_cv(cv_names, index)
+        dataset_train = Mydataset(training_dataset, batch_size=128, shuffle=True, transforms="vit")
+        dataset_valid = Mydataset(valid_dataset, batch_size=128, shuffle=True, transforms="vit")
+        train_loader = dataset_train.dataloader()
         print(f'length of train_loader: {len(train_loader)}')
-        valid_loader= dataset_valid.dataloader()
+        valid_loader = dataset_valid.dataloader()
         for imgs, labels in tqdm(train_loader):
             imgs, labels = imgs.to(device), labels.to(device)
             optimizer.zero_grad()
@@ -385,61 +386,16 @@ def fine_tune(model,cv_names,  params:dict,scheduler,device,  initial_accuracy):
             best_acc = top1_acc
             counter = 0  # reset patience counter if there is improvement
         else:
-            counter += 1 # increment if no improvement
+            counter += 1  # increment if no improvement
             if counter >= patience:
                 print("Early stopping triggered due to no improvement.")
                 break  # stop training
 
     return model
 
-# from TinyViT.models.tiny_vit import tiny_vit_5m_224
-# def load_model(return_params = False):
-#     """
-#     loads the model according to algorithm 1 in the paper.
-#     args:
-#         return_params: bool
-#     returns:
-#         if return_params is true it will return model with the params
-#     """
-#     # loading the old model with the proper checkpoints
-#     old_model = tiny_vit_5m_224()
-#     checkpoint = torch.load("tiny_vit_5m_22kto1k_distill (2).pth")
-#     old_model.load_state_dict(checkpoint["model"], strict = True)
-#     return old_model
-
-#     modified_model = tiny_vit_5m_224(pretrained=False, 
-#         embed_dims=[64, 128, 160, 320],
-#         depths=[ 2, 2, 6, 1 ],
-#         num_heads=[2, 4, 5, 10],
-#         window_sizes=[7, 7, 14, 7],
-#         num_classes= 1000
-#     )
-#     modified_model.patch_embed = old_model.patch_embed
-#     modified_model.head = old_model.head
-#     # copying old params which are not pruned
-#     for i,layers in enumerate(modified_model.layers):
-#         if i == 3:
-#             modified_model.layers[i].blocks[0]= old_model.layers[i].blocks[1]
-#         else:
-#             modified_model.layers[i] = old_model.layers[i]
-#     if return_params:
-#         params = sum([p.numel() for p in modified_model.parameters() if p.requires_grad])
-
-#     return modified_model, params if return_params else None
-
-
-
-
-####################################################################################################
-
-import json
-from collections import defaultdict
 
 def get_layers_and_heads(path, percentage=10, score_type="global"):
-    """
-    Retrieves and identifies the lowest-scoring heads for model pruning.
-    Ties are broken by prioritizing layers closer to the output (higher layer numbers).
-    """
+    """Retrieves and identifies the lowest-scoring heads for model pruning, breaking ties on late layers."""
     with open(path, "r") as file:
         score_file = json.load(file)
         
@@ -462,7 +418,7 @@ def get_layers_and_heads(path, percentage=10, score_type="global"):
     combined = defaultdict(list)
     
     if score_type == "global":
-        # 3. Because we tracked head_idx, we can directly populate our dictionary safely!
+        # 3. Use head_idx to safely populate the dictionary
         for layer, head_idx, score in sorted_score[:cutoff_index]:
             combined[int(layer)].append(head_idx)
 
