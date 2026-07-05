@@ -195,16 +195,16 @@ def prune_vit_out_channels(
     print(f"params before pruning: {b_params}")
     # Prune specified layer head
     model= model.to("cpu")
-    block = model.vit.encoder.layer[prune_layer_idx]
+    block = model.vit.layers[prune_layer_idx]
     # num of heads
-    num_heads_before=block.attention.attention.num_attention_heads 
-    head_dim = block.attention.attention.query.out_features // num_heads_before
+    num_heads_before = block.attention.num_attention_heads
+    head_dim = block.attention.head_dim
     dummy_input = torch.randn(1, 197, head_dim * num_heads_before).to("cpu")
     print(f'Shape of input: {dummy_input.shape}')
     print(f'Building dependency graph________________________________')
     DG = tp.DependencyGraph().build_dependency(block, example_inputs=dummy_input)
-    
-    
+
+
     # Build index list for selected heads
     idxs = []
     for h in pruned_heads:
@@ -212,7 +212,7 @@ def prune_vit_out_channels(
         end = (h + 1) * head_dim
         idxs.extend(range(start, end))
 
-    q = block.attention.attention.query
+    q = block.attention.q_proj
     group = DG.get_pruning_group(q, tp.prune_linear_out_channels, idxs=idxs)
 
     if DG.check_pruning_group(group):
@@ -220,13 +220,11 @@ def prune_vit_out_channels(
 
     # Set number of heads dynamically
     num_heads_after = num_heads_before - len(pruned_heads)
-    block.attention.attention.num_attention_heads = num_heads_after
-    block.attention.attention.head_dim = head_dim
-    block.attention.attention.all_head_size = head_dim * num_heads_after
+    block.attention.num_attention_heads = num_heads_after
 
     # Register hooks for every encoder block's layernorm_before
     hook_handles = []
-    for idx, blk in enumerate(model.vit.encoder.layer):
+    for idx, blk in enumerate(model.vit.layers):
         handle = blk.layernorm_before.register_forward_hook(
             lambda module, inp, out, idx=idx: print(
                 f"Block {idx} layernorm_before input shape: {inp[0].shape} and output shape {out[0].shape}"
